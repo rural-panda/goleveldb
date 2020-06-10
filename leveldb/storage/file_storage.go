@@ -91,6 +91,7 @@ type fileStorage struct {
 // same path will fail.
 //
 // The storage must be closed after use, by calling Close method.
+// 通过flock 来进行加锁，非只读有排它性
 func OpenFile(path string, readOnly bool) (Storage, error) {
 	if fi, err := os.Stat(path); err == nil {
 		if !fi.IsDir() {
@@ -136,8 +137,9 @@ func OpenFile(path string, readOnly bool) (Storage, error) {
 		readOnly: readOnly,
 		flock:    flock,
 		logw:     logw,
-		logSize:  logSize,
+		logSize:  logSize, // 初始大小：已写入的游标位
 	}
+	// 防止内存泄露，GC 前执行清理操作
 	runtime.SetFinalizer(fs, (*fileStorage).Close)
 	return fs, nil
 }
@@ -148,12 +150,15 @@ func (fs *fileStorage) Lock() (Locker, error) {
 	if fs.open < 0 {
 		return nil, ErrClosed
 	}
+	// 只读允许所有人进行锁定
 	if fs.readOnly {
 		return &fileStorageLock{}, nil
 	}
+	// 非只读判断是否已经锁定
 	if fs.slock != nil {
 		return nil, ErrLocked
 	}
+	// 锁定
 	fs.slock = &fileStorageLock{fs: fs}
 	return fs.slock, nil
 }

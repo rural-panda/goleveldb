@@ -24,8 +24,8 @@ type BufferPool struct {
 	size      [5]uint32
 	sizeMiss  [5]uint32
 	sizeHalf  [5]uint32
-	baseline  [4]int
-	baseline0 int
+	baseline  [4]int // baseline:  [...]int{baseline / 4, baseline / 2, baseline * 2, baseline * 4},
+	baseline0 int    // 初始化的大小 baseline
 
 	mu     sync.RWMutex
 	closed bool
@@ -40,7 +40,9 @@ type BufferPool struct {
 	miss    uint32
 }
 
+// 计算n 大小的buffer 应该放置于哪个pool 中，pool 大小一共是 6，分别放置不同大小等级的buffer
 func (p *BufferPool) poolNum(n int) int {
+	// 最接近baseline 大小的buffer 存放于 p.pool[0] 中
 	if n <= p.baseline0 && n > p.baseline0/2 {
 		return 0
 	}
@@ -49,6 +51,7 @@ func (p *BufferPool) poolNum(n int) int {
 			return i + 1
 		}
 	}
+	// 最大的baseline，p.poll(len(baseline) + 1) 里面存放容量最大的buffer 缓存
 	return len(p.baseline) + 1
 }
 
@@ -67,14 +70,18 @@ func (p *BufferPool) Get(n int) []byte {
 
 	atomic.AddUint32(&p.get, 1)
 
+	// 根据需要的buffer 大小，计算从哪个 pool 元素中找缓存的buffer
 	poolNum := p.poolNum(n)
 	pool := p.pool[poolNum]
+
+	// poolNum == 0 时候，需要的buffer 大小最接近baseline 的大小
 	if poolNum == 0 {
 		// Fast path.
 		select {
 		case b := <-pool:
 			switch {
 			case cap(b) > n:
+				// todo: 缓存的buffer 比需要的buffer 大一倍以上，这里新初始化一个n 大小的buffer 返回，并将b 重新加入pool
 				if cap(b)-n >= n {
 					atomic.AddUint32(&p.half, 1)
 					select {
@@ -93,9 +100,10 @@ func (p *BufferPool) Get(n int) []byte {
 				atomic.AddUint32(&p.greater, 1)
 			}
 		default:
+			// 计数miss
 			atomic.AddUint32(&p.miss, 1)
 		}
-
+		// 返回len() == n,大小为 baseline 的buffer,这里尽量是 2 的指数值，尽量保证字节对齐
 		return make([]byte, n, p.baseline0)
 	} else {
 		sizePtr := &p.size[poolNum-1]
@@ -199,6 +207,7 @@ func (p *BufferPool) String() string {
 		p.baseline0, p.size, p.sizeMiss, p.sizeHalf, p.get, p.put, p.half, p.less, p.equal, p.greater, p.miss)
 }
 
+// 每两秒，清空buffer
 func (p *BufferPool) drain() {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -231,6 +240,7 @@ func NewBufferPool(baseline int) *BufferPool {
 		baseline:  [...]int{baseline / 4, baseline / 2, baseline * 2, baseline * 4},
 		closeC:    make(chan struct{}, 1),
 	}
+	// pool 中的chan 为整个Buffer 的大小，超过baseline 的buffer 只可以存在一个，和baseline 最接近的pool 可以同时有多个候选buffer
 	for i, cap := range []int{2, 2, 4, 4, 2, 1} {
 		p.pool[i] = make(chan []byte, cap)
 	}

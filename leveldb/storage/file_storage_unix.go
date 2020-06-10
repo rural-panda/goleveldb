@@ -24,6 +24,7 @@ func (fl *unixFileLock) release() error {
 	return fl.f.Close()
 }
 
+// flock 建议锁
 func newFileLock(path string, readOnly bool) (fl fileLock, err error) {
 	var flag int
 	if readOnly {
@@ -47,8 +48,9 @@ func newFileLock(path string, readOnly bool) (fl fileLock, err error) {
 	return
 }
 
+// syscall.LOCK_NB 非阻塞加锁，读写情况下，加排他锁，只允许一个进程加锁成功
 func setFileLock(f *os.File, readOnly, lock bool) error {
-	how := syscall.LOCK_UN
+	how := syscall.LOCK_UN // 解锁
 	if lock {
 		if readOnly {
 			how = syscall.LOCK_SH
